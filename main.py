@@ -1,8 +1,47 @@
 import pygame
 import pymunk
 import pymunk.pygame_util
-import sys
+import sys, os
+import dotenv
 import time
+from openai import OpenAI
+import openai
+dotenv.load_dotenv()
+APIKEY = os.getenv("API_KEY")
+openai.api_key = APIKEY
+client = OpenAI(api_key = APIKEY)
+assistant = client.beta.assistants.create(
+    name = "Game Narrator",
+    instructions = "You are a narrator at the end of a level in a video game about the Obesity Epidemic in America. The game focuses on a character eating healthy food and unhealthy food which speeds them up and harms them respectively. Based on the health of the character (which will be provided to you), please give them a brief summary of their choices in the level (i.e low health = lots of unhealthy food, high health = lots of healthy food)  and give them information about what happens based on their eating habits. Keep in mind this game is meant as an educational tool for children, so keep all information informative and helpful.",
+    tools = [{"type": "code_interpreter"}],
+    model = "gpt-4o"
+)
+
+class Camera:
+    def __init__(self, screen_width, screen_height, zoom=1.0, smooth_speed=0.1):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.zoom = zoom
+        self.smooth_speed = smooth_speed
+        self.x = 0
+        self.y = 0
+
+    def update(self, target_pos):
+        # Compute the desired camera top-left such that the target is centered.
+        desired_x = target_pos.x - self.screen_width / (2 * self.zoom)
+        desired_y = target_pos.y - self.screen_height / (2 * self.zoom)
+        # Smoothly interpolate toward the desired position.
+        self.x += (desired_x - self.x) * self.smooth_speed
+        self.y += (desired_y - self.y) * self.smooth_speed
+
+    def get_transform(self):
+        # Create a pymunk.Transform that scales and translates the world coordinates
+        # so that the camera position is at the top left of the screen.
+        return pymunk.Transform(self.zoom, 0, 0, self.zoom, -self.x * self.zoom, -self.y * self.zoom)
+
+    def apply(self, pos):
+        # Convert world position to screen position.
+        return ((pos.x - self.x) * self.zoom, (pos.y - self.y) * self.zoom)
 
 class Spike:
     def __init__(self, space, position):
@@ -42,7 +81,7 @@ class Food:
         space.add(self.body, self.shape)
 
 class Level:
-    def __init__(self, space, level_data):
+    def __init__(self, space, level_data, color):
         self.space = space
         self.FRICTION = 0.8
         self.static_body = self.space.static_body
@@ -54,6 +93,7 @@ class Level:
             platform = pymunk.Segment(self.static_body, start, end, 5)
             platform.friction = self.FRICTION
             platform.collision_type = 2
+            platform.color = color
             self.space.add(platform)
             self.platforms.append(platform)
 
@@ -61,15 +101,12 @@ class Level:
         for pos in level_data.get("spikes", []):
             spike = Spike(self.space, pos)
             self.spikes.append(spike)
-
         for i in range(1400 // 20):
             spike = Spike(self.space, (i * 20, 900))
             self.spikes.append(spike)
-
         for i in range(900 // 20):
             spike = Spike(self.space, (0, i * 20))
             self.spikes.append(spike)
-
         for i in range(900 // 20):
             spike = Spike(self.space, (1400, i * 20))
             self.spikes.append(spike)
@@ -124,9 +161,11 @@ class Game:
         self.contact = {"on_ground": False}
         self.setup_collisions()
 
+        # Create a camera that follows the player.
+        self.camera = Camera(1400, 900, zoom=1.0, smooth_speed=0.1)
+
         self.current_level = 0
-        # In this level data, you can optionally provide an image path for healthy or junk food.
-        # If the image path is provided and ends with '.png', the image will override the default sprite.
+        # Level data – you can also provide image paths for food items.
         self.levels = [
             {
                 "platforms": [
@@ -139,12 +178,12 @@ class Game:
                 "spikes": [(400, 770), (800, 570)],
                 "healthy_food": [(200, 750), (500, 650)],
                 "junk_food": [(700, 650), (1000, 550)],
-                # Uncomment or change the paths below to use PNG images for food items.
+                # Uncomment and set valid PNG paths to override default sprites.
                 # "healthy_food_image": "./assets/images/healthy_food.png",
                 # "junk_food_image": "./assets/images/junk_food.png"
             },
         ]
-
+        
     def create_player(self):
         mass = 1
         width, height = 60, 60
@@ -175,13 +214,20 @@ class Game:
                 if shape.collision_type == 4:
                     space.remove(shape, shape.body)
                     break
+            # Increase player's velocity by 20% and health by 5 points.
+            self.player.velocity = self.player.velocity * 1.20
+            self.health += 5
             return False
 
         def player_collect_junk(arbiter, space, data):
+            # Remove the junk food item upon collision.
             for shape in arbiter.shapes:
                 if shape.collision_type == 5:
                     space.remove(shape, shape.body)
                     break
+            # Reduce velocity by 35% and decrease health by 5 points.
+            self.player.velocity = self.player.velocity * 0.65
+            self.health = max(self.health - 5, 0)
             return False
 
         handler = self.space.add_collision_handler(1, 2)
@@ -201,7 +247,15 @@ class Game:
         self.space.remove(*self.space.shapes)
         self.space.remove(*self.space.bodies)
         self.create_player()
-        self.level = Level(self.space, self.levels[level_index])
+        color = pygame.Color(0, 0, 0, 0)
+        match level_index:
+            case 0:
+                color = pygame.Color(0, 255, 0, 0)
+                self.background_image = pygame.image.load("/home/yugms/Pictures/2025-02-18_14-08.png").convert()
+                pass
+            case 1:
+                pass
+        self.level = Level(self.space, self.levels[level_index], color)
         self.player.position = self.level.spawn_point
         self.player.velocity = (0, 0)
         self.setup_collisions()
@@ -225,10 +279,22 @@ class Game:
 
     def draw_end_screen(self):
         self.screen.fill((0, 0, 0))
+        thread = client.beta.threads.create()
+        response = client.chat.completions.create(
+            model = "gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a narrator at the end of a level in a video game about the Obesity Epidemic in America. The game focuses on a character eating healthy food and unhealthy food which speeds them up and harms them respectively. Based on the health of the character (which will be provided to you), please give them a brief summary of their choices in the level (i.e low health = lots of unhealthy food, high health = lots of healthy food)  and give them information about what happens based on their eating habits. Keep in mind this game is meant as an educational tool for children, so keep all information informative and helpful."},
+                {"role": "user", "content": f"Health was {self.health}"}
+            ]
+        )
+        
+        print(response)
         text = self.font.render(
             f"You Won! Great Job!\nYour Health was {self.health} and your time was {self.get_time()}",
             True, (255, 255, 255))
         self.screen.blit(text, (450, 400))
+        pygame.display.flip()
+        
 
     def draw_menu(self):
         self.screen.fill((255, 255, 255))
@@ -259,6 +325,7 @@ class Game:
                 self.draw_menu()
                 self.load_level(self.current_level)
                 continue
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit()
@@ -275,7 +342,11 @@ class Game:
                 self.draw_death_screen()
                 continue
 
-            # Add movement controls for left and right
+            # Update camera to follow the player.
+            self.camera.update(self.player.position)
+            self.draw_options.transform = self.camera.get_transform()
+
+            # Movement controls for left and right.
             keys = pygame.key.get_pressed()
             if keys[pygame.K_RIGHT]:
                 self.player.velocity = pymunk.Vec2d(200, self.player.velocity.y)
@@ -284,11 +355,11 @@ class Game:
 
             self.screen.fill((255, 255, 255))
             self.space.debug_draw(self.draw_options)
-            # Draw food images over the debug drawing if an image override is active.
+            # Draw food images with camera transformation if an image override is active.
             for food in self.level.foods:
                 if food.use_png and food.image:
-                    pos = food.body.position
-                    rect = food.image.get_rect(center=(int(pos.x), int(pos.y)))
+                    pos_screen = self.camera.apply(food.body.position)
+                    rect = food.image.get_rect(center=(int(pos_screen[0]), int(pos_screen[1])))
                     self.screen.blit(food.image, rect)
             self.draw_health()
             self.draw_time()
@@ -296,18 +367,21 @@ class Game:
 
             self.space.step(1/60.0)
 
-            # Check if player reached the end
+            # Check if player reached the end.
             player_pos = self.player.position
             end_point = self.level.end_point
             distance = ((player_pos.x - end_point[0])**2 + (player_pos.y - end_point[1])**2) ** 0.5
             if distance < 50:
-                self.current_level = (self.current_level + 1) % len(self.levels)
+                self.current_level = (self.current_level + 1)
+                if self.current_level == len(self.levels):
+                    self.draw_end_screen()
+                    time.sleep(20)
+                    pygame.quit()
+                    sys.exit()
                 self.load_level(self.current_level)
 
             self.clock.tick(60)
             self.player.angular_velocity = 0
-
-        pygame.quit()
 
 def main():
     Game().run()
