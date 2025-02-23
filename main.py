@@ -1,24 +1,10 @@
-import os
-import sys
 import pygame
 import pymunk
 import pymunk.pygame_util
-import sys, os
-import dotenv
+import sys
 import time
-from openai import OpenAI
-import openai
-dotenv.load_dotenv()
-APIKEY = os.getenv("API_KEY")
-openai.api_key = APIKEY
-client = OpenAI(api_key = APIKEY)
-assistant = client.beta.assistants.create(
-    name = "Game Narrator",
-    instructions = "You are a narrator at the end of a level in a video game about the Obesity Epidemic in America. The game focuses on a character eating healthy food and unhealthy food which speeds them up and harms them respectively. Based on the health of the character (which will be provided to you), please give them a brief summary of their choices in the level (i.e low health = lots of unhealthy food, high health = lots of healthy food)  and give them information about what happens based on their eating habits. Keep in mind this game is meant as an educational tool for children, so keep all information informative and helpful.",
-    tools = [{"type": "code_interpreter"}],
-    model = "gpt-4o"
-)
 
+# Camera class to handle zooming and following the player.
 class Camera:
     def __init__(self, screen_width, screen_height, zoom=1.0, smooth_speed=0.1):
         self.screen_width = screen_width
@@ -29,32 +15,33 @@ class Camera:
         self.y = 0
 
     def update(self, target_pos):
-        # Compute the desired camera top-left such that the target is centered.
+        # Center the camera on the target position.
         desired_x = target_pos.x - self.screen_width / (2 * self.zoom)
         desired_y = target_pos.y - self.screen_height / (2 * self.zoom)
-        # Smoothly interpolate toward the desired position.
         self.x += (desired_x - self.x) * self.smooth_speed
         self.y += (desired_y - self.y) * self.smooth_speed
 
     def get_transform(self):
-        # Create a pymunk.Transform that scales and translates the world coordinates
-        # so that the camera position is at the top left of the screen.
+        # Create a pymunk.Transform that scales and translates the world coordinates.
         return pymunk.Transform(self.zoom, 0, 0, self.zoom, -self.x * self.zoom, -self.y * self.zoom)
 
     def apply(self, pos):
-        # Convert world position to screen position.
+        # Convert world coordinates to screen coordinates.
         return ((pos.x - self.x) * self.zoom, (pos.y - self.y) * self.zoom)
 
+# Spike object used for in-level hazards.
 class Spike:
     def __init__(self, space, position):
         self.space = space
         self.body = pymunk.Body(body_type=pymunk.Body.STATIC)
         self.body.position = position
+        # Define a triangle shape.
         self.shape = pymunk.Poly(self.body, [(-20, 10), (20, 10), (0, -20)])
-        self.shape.color = (255, 0, 0, 255)  # Red color
+        self.shape.color = (255, 0, 0, 255)  # Red color for spikes
         self.shape.collision_type = 3  # Unique collision type for spikes
         space.add(self.body, self.shape)
 
+# Food object. Optionally uses an image if a valid PNG path is provided.
 class Food:
     def __init__(self, space, position, food_type, use_png=False, image_path=None):
         """
@@ -67,54 +54,73 @@ class Food:
         self.use_png = use_png and image_path and image_path.lower().endswith('.png')
         self.image = None
         if self.use_png:
-            # Load the PNG image with transparency.
             self.image = pygame.image.load(image_path).convert_alpha()
         self.body = pymunk.Body(body_type=pymunk.Body.STATIC)
         self.body.position = position
         self.radius = 15
         self.shape = pymunk.Circle(self.body, self.radius)
-        # Use green for healthy food and red for junk food (if no image override).
         if food_type == "healthy":
-            self.shape.color = (0, 255, 0, 255)  # green
+            self.shape.color = (0, 255, 0, 255)  # Green for healthy food
             self.shape.collision_type = 4
         elif food_type == "junk":
-            self.shape.color = (255, 0, 0, 255)  # red
+            self.shape.color = (255, 0, 0, 255)  # Red for junk food
             self.shape.collision_type = 5
         space.add(self.body, self.shape)
 
+# Base Level class.
 class Level:
-    def __init__(self, space, level_data, color):
+    def __init__(self, space, level_data):
         self.space = space
         self.FRICTION = 0.8
         self.static_body = self.space.static_body
         self.platforms = []
         self.spikes = []
         self.foods = []
-        # Create platforms
+
+        # Define safe area boundaries (used for clamping platform endpoints).
+        min_x, max_x = 20, 1380
+        min_y, max_y = 20, 880
+
+        # Create platforms and clamp endpoints within the safe area.
         for start, end in level_data["platforms"]:
-            platform = pymunk.Segment(self.static_body, start, end, 5)
+            clamped_start = (max(min_x, min(start[0], max_x)),
+                             max(min_y, min(start[1], max_y)))
+            clamped_end = (max(min_x, min(end[0], max_x)),
+                           max(min_y, min(end[1], max_y)))
+            platform = pymunk.Segment(self.static_body, clamped_start, clamped_end, 5)
             platform.friction = self.FRICTION
             platform.collision_type = 2
-            platform.color = color
             self.space.add(platform)
             self.platforms.append(platform)
 
-        # Create spikes
+        # Create in-level spikes defined in the level data.
         for pos in level_data.get("spikes", []):
             spike = Spike(self.space, pos)
             self.spikes.append(spike)
-        for i in range(1400 // 20):
-            spike = Spike(self.space, (i * 20, 900))
-            self.spikes.append(spike)
-        for i in range(900 // 20):
-            spike = Spike(self.space, (0, i * 20))
-            self.spikes.append(spike)
-        for i in range(900 // 20):
-            spike = Spike(self.space, (1400, i * 20))
-            self.spikes.append(spike)
 
-        # Create food items if defined in level_data.
-        # Optionally override the sprite if an image is provided.
+        # Create a rectangular border instead of boundary triangles.
+        # Adjust the border to be slightly larger than the visible screen if needed.
+        border_thickness = 10  # thickness of the border
+        left = -border_thickness
+        right = 1400 + border_thickness
+        top = -border_thickness
+        bottom = 900 + border_thickness
+
+        border_segments = []
+        # Top border.
+        border_segments.append(pymunk.Segment(self.static_body, (left, top), (right, top), border_thickness))
+        # Bottom border.
+        border_segments.append(pymunk.Segment(self.static_body, (left, bottom), (right, bottom), border_thickness))
+        # Left border.
+        border_segments.append(pymunk.Segment(self.static_body, (left, top), (left, bottom), border_thickness))
+        # Right border.
+        border_segments.append(pymunk.Segment(self.static_body, (right, top), (right, bottom), border_thickness))
+        for segment in border_segments:
+            segment.friction = self.FRICTION
+            segment.color = (128, 128, 128, 255)  # Grey border
+            self.space.add(segment)
+
+        # Create food items.
         healthy_img = level_data.get("healthy_food_image", None)
         if "healthy_food" in level_data:
             for pos in level_data["healthy_food"]:
@@ -128,17 +134,97 @@ class Level:
                 food = Food(self.space, pos, "junk", use_png=use_image, image_path=junk_img)
                 self.foods.append(food)
 
+        # Determine spawn and end points based on the platforms.
         platform_x = {i: self.platforms[i]._get_a()[0] for i in range(len(self.platforms))}
-
-        # Spawn and End Points
         min_key = min(platform_x, key=platform_x.get)
         middle_x_start = (self.platforms[min_key]._get_a()[0] + self.platforms[min_key]._get_b()[0]) / 2
         self.spawn_point = (middle_x_start, self.platforms[min_key]._get_a()[1] - 100)
-
         max_key = max(platform_x, key=platform_x.get)
         middle_x_end = (self.platforms[max_key]._get_a()[0] + self.platforms[max_key]._get_b()[0]) / 2
         self.end_point = (middle_x_end, self.platforms[max_key]._get_a()[1] - 20)
 
+# Five distinct level classes with different platform arrangements.
+class Level1(Level):
+    def __init__(self, space):
+        level_data = {
+            "platforms": [
+                [(100, 850), (400, 800)],
+                [(450, 750), (700, 700)],
+                [(750, 650), (1000, 600)],
+                [(1050, 550), (1250, 500)],
+                [(1300, 450), (1380, 430)]
+            ],
+            "spikes": [(400, 770), (800, 570)],
+            "healthy_food": [(200, 750), (500, 650)],
+            "junk_food": [(700, 650), (1000, 550)]
+        }
+        super().__init__(space, level_data)
+
+class Level2(Level):
+    def __init__(self, space):
+        level_data = {
+            "platforms": [
+                [(50, 800), (250, 800)],
+                [(300, 750), (500, 750)],
+                [(550, 700), (750, 700)],
+                [(800, 650), (1000, 650)],
+                [(1050, 600), (1300, 600)]
+            ],
+            "spikes": [(350, 770), (850, 720)],
+            "healthy_food": [(150, 780), (600, 700)],
+            "junk_food": [(900, 700), (1150, 600)]
+        }
+        super().__init__(space, level_data)
+
+class Level3(Level):
+    def __init__(self, space):
+        level_data = {
+            "platforms": [
+                [(200, 850), (350, 850)],
+                [(400, 800), (550, 800)],
+                [(600, 750), (750, 750)],
+                [(800, 700), (950, 700)],
+                [(1000, 650), (1150, 650)]
+            ],
+            "spikes": [(500, 820), (900, 720)],
+            "healthy_food": [(250, 800), (700, 750)],
+            "junk_food": [(800, 700), (1050, 650)]
+        }
+        super().__init__(space, level_data)
+
+class Level4(Level):
+    def __init__(self, space):
+        level_data = {
+            "platforms": [
+                [(100, 800), (300, 780)],
+                [(350, 740), (600, 720)],
+                [(650, 680), (900, 660)],
+                [(950, 620), (1150, 600)],
+                [(1200, 580), (1380, 560)]
+            ],
+            "spikes": [(400, 760), (800, 710)],
+            "healthy_food": [(200, 780), (550, 700)],
+            "junk_food": [(750, 680), (1100, 630)]
+        }
+        super().__init__(space, level_data)
+
+class Level5(Level):
+    def __init__(self, space):
+        level_data = {
+            "platforms": [
+                [(150, 850), (350, 840)],
+                [(400, 800), (600, 790)],
+                [(650, 750), (850, 740)],
+                [(900, 700), (1100, 690)],
+                [(1150, 650), (1350, 640)]
+            ],
+            "spikes": [(500, 830), (900, 780), (1300, 730)],
+            "healthy_food": [(250, 840), (650, 790)],
+            "junk_food": [(850, 780), (1200, 730)]
+        }
+        super().__init__(space, level_data)
+
+# Main Game class.
 class Game:
     def __init__(self):
         pygame.init()
@@ -150,12 +236,11 @@ class Game:
         self.space = pymunk.Space()
         self.space.gravity = (0, 900)
 
-        # Player setup
+        # Player setup.
         self.player = None
         self.player_shape = None
         self.create_player()
 
-        # Health settings.
         self.health = 10.0
         self.start_time = time.time()
         self.font = pygame.font.Font("./assets/fonts/Sigmar-Regular.ttf", 36)
@@ -164,29 +249,17 @@ class Game:
         self.contact = {"on_ground": False}
         self.setup_collisions()
 
-        # Create a camera that follows the player.
+        # Camera to follow the player.
         self.camera = Camera(1400, 900, zoom=1.0, smooth_speed=0.1)
 
+        # List of level classes.
+        self.level_classes = [Level1, Level2, Level3, Level4, Level5]
         self.current_level = 0
-        # Level data – you can also provide image paths for food items.
-        self.levels = [
-            {
-                "platforms": [
-                    [(50, 800), (300, 800)],
-                    [(350, 700), (600, 700)],
-                    [(650, 600), (900, 600)],
-                    [(950, 500), (1200, 500)],
-                    [(1250, 400), (1400, 400)],
-                ],
-                "spikes": [(400, 770), (800, 570)],
-                "healthy_food": [(200, 750), (500, 650)],
-                "junk_food": [(700, 650), (1000, 550)],
-                # Uncomment and set valid PNG paths to override default sprites.
-                # "healthy_food_image": "./assets/images/healthy_food.png",
-                # "junk_food_image": "./assets/images/junk_food.png"
-            },
-        ]
-        
+
+        # Uncomment and set valid PNG paths if desired:
+        # self.healthy_food_image = "./assets/images/healthy_food.png"
+        # self.junk_food_image = "./assets/images/junk_food.png"
+
     def create_player(self):
         mass = 1
         width, height = 60, 60
@@ -212,23 +285,21 @@ class Game:
             return False
 
         def player_collect_healthy(arbiter, space, data):
-            # Remove the healthy food item upon collision.
             for shape in arbiter.shapes:
                 if shape.collision_type == 4:
                     space.remove(shape, shape.body)
                     break
-            # Increase player's velocity by 20% and health by 5 points.
+            # Increase velocity by 20% and health by 5.
             self.player.velocity = self.player.velocity * 1.20
             self.health += 5
             return False
 
         def player_collect_junk(arbiter, space, data):
-            # Remove the junk food item upon collision.
             for shape in arbiter.shapes:
                 if shape.collision_type == 5:
                     space.remove(shape, shape.body)
                     break
-            # Reduce velocity by 35% and decrease health by 5 points.
+            # Reduce velocity by 35% and decrease health by 5.
             self.player.velocity = self.player.velocity * 0.65
             self.health = max(self.health - 5, 0)
             return False
@@ -250,18 +321,29 @@ class Game:
         self.space.remove(*self.space.shapes)
         self.space.remove(*self.space.bodies)
         self.create_player()
-        color = pygame.Color(0, 0, 0, 0)
-        match level_index:
-            case 0:
-                color = pygame.Color(0, 255, 0, 0)
-                self.background_image = pygame.image.load("/home/yugms/Pictures/2025-02-18_14-08.png").convert()
-                pass
-            case 1:
-                pass
-        self.level = Level(self.space, self.levels[level_index], color)
+        self.level = self.level_classes[level_index](self.space)
         self.player.position = self.level.spawn_point
         self.player.velocity = (0, 0)
         self.setup_collisions()
+
+    def teleport_to_next_level(self):
+        fade_surface = pygame.Surface((1400, 900))
+        fade_surface.fill((0, 0, 0))
+        # Fade out effect.
+        for alpha in range(0, 256, 5):
+            fade_surface.set_alpha(alpha)
+            self.screen.blit(fade_surface, (0, 0))
+            pygame.display.flip()
+            pygame.time.delay(20)
+        # Load the next level.
+        self.current_level = (self.current_level + 1) % len(self.level_classes)
+        self.load_level(self.current_level)
+        # Fade in effect.
+        for alpha in range(255, -1, -5):
+            fade_surface.set_alpha(alpha)
+            self.screen.blit(fade_surface, (0, 0))
+            pygame.display.flip()
+            pygame.time.delay(20)
 
     def get_time(self):
         return round(time.time() - self.start_time, 1)
@@ -278,26 +360,14 @@ class Game:
         self.screen.fill((0, 0, 0))
         text = self.font.render("Game Over! Press R to Restart", True, (255, 255, 255))
         self.screen.blit(text, (450, 400))
-        pygame.display.flip()  # Update the display to show the death screen
+        pygame.display.flip()
 
     def draw_end_screen(self):
         self.screen.fill((0, 0, 0))
-        thread = client.beta.threads.create()
-        response = client.chat.completions.create(
-            model = "gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a narrator at the end of a level in a video game about the Obesity Epidemic in America. The game focuses on a character eating healthy food and unhealthy food which speeds them up and harms them respectively. Based on the health of the character (which will be provided to you), please give them a brief summary of their choices in the level (i.e low health = lots of unhealthy food, high health = lots of healthy food)  and give them information about what happens based on their eating habits. Keep in mind this game is meant as an educational tool for children, so keep all information informative and helpful."},
-                {"role": "user", "content": f"Health was {self.health}"}
-            ]
-        )
-        
-        print(response)
         text = self.font.render(
             f"You Won! Great Job!\nYour Health was {self.health} and your time was {self.get_time()}",
             True, (255, 255, 255))
         self.screen.blit(text, (450, 400))
-        pygame.display.flip()
-        
 
     def draw_menu(self):
         self.screen.fill((255, 255, 255))
@@ -311,24 +381,22 @@ class Game:
         pygame.draw.rect(self.screen, (0, 0, 0), play_button_rect)
         self.screen.blit(title_text, (400, 200))
         self.screen.blit(play_button_text, (play_button_rect.x + 50, play_button_rect.y + 25))
-
         pygame.display.flip()
-        # Handle play button click
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if play_button_rect.collidepoint(event.pos):
-                    self.in_game = True  # Start the game when "Play" is clicked
+                    self.in_game = True
 
     def run(self):
         while True:
-            if not self.in_game:  # Show menu if not in game
+            if not self.in_game:
                 self.draw_menu()
                 self.load_level(self.current_level)
                 continue
-
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit()
@@ -340,16 +408,15 @@ class Game:
                         self.start_time = time.time()
                     elif event.key == pygame.K_UP and self.contact["on_ground"]:
                         self.player.apply_impulse_at_local_point((0, -500))
-
             if self.health == 0:
                 self.draw_death_screen()
                 continue
 
-            # Update camera to follow the player.
+            # Update the camera.
             self.camera.update(self.player.position)
             self.draw_options.transform = self.camera.get_transform()
 
-            # Movement controls for left and right.
+            # Movement controls.
             keys = pygame.key.get_pressed()
             if keys[pygame.K_RIGHT]:
                 self.player.velocity = pymunk.Vec2d(200, self.player.velocity.y)
@@ -358,7 +425,7 @@ class Game:
 
             self.screen.fill((255, 255, 255))
             self.space.debug_draw(self.draw_options)
-            # Draw food images with camera transformation if an image override is active.
+            # Draw food images with camera transformation.
             for food in self.level.foods:
                 if food.use_png and food.image:
                     pos_screen = self.camera.apply(food.body.position)
@@ -370,21 +437,17 @@ class Game:
 
             self.space.step(1/60.0)
 
-            # Check if player reached the end.
+            # Check if the player reached the end and trigger teleportation.
             player_pos = self.player.position
             end_point = self.level.end_point
             distance = ((player_pos.x - end_point[0])**2 + (player_pos.y - end_point[1])**2) ** 0.5
             if distance < 50:
-                self.current_level = (self.current_level + 1)
-                if self.current_level == len(self.levels):
-                    self.draw_end_screen()
-                    time.sleep(20)
-                    pygame.quit()
-                    sys.exit()
-                self.load_level(self.current_level)
+                self.teleport_to_next_level()
 
             self.clock.tick(60)
             self.player.angular_velocity = 0
+
+        pygame.quit()
 
 def main():
     Game().run()
