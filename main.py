@@ -1,3 +1,5 @@
+import os
+import sys
 import pygame
 import pymunk
 import pymunk.pygame_util
@@ -153,6 +155,7 @@ class Game:
         self.player_shape = None
         self.create_player()
 
+        # Health settings.
         self.health = 10.0
         self.start_time = time.time()
         self.font = pygame.font.Font("./assets/fonts/Sigmar-Regular.ttf", 36)
