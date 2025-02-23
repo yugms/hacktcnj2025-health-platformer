@@ -1,136 +1,97 @@
+import os
+import sys
 import pygame
 import pymunk
 import pymunk.pygame_util
-import sys
 
-# Helper function to draw a button with rounded corners
-def draw_button(surface, text, rect, font, button_color, text_color, border_color, border_width=2, border_radius=10):
-    pygame.draw.rect(surface, button_color, rect, border_radius=border_radius)
-    pygame.draw.rect(surface, border_color, rect, width=border_width, border_radius=border_radius)
-    text_surf = font.render(text, True, text_color)
-    text_rect = text_surf.get_rect(center=rect.center)
-    surface.blit(text_surf, text_rect)
+# Toggle placeholder image usage if the PNG is not found.
+USE_PLACEHOLDER_ITEM = True
 
-# Main Menu with Play and Credits buttons
-class MainMenu:
-    def __init__(self, screen, font):
-        self.screen = screen
-        self.font = font
-        self.bg_color = (30, 30, 30)
-        self.button_color = (200, 200, 200)
-        self.text_color = (0, 0, 0)
-        self.border_color = (50, 50, 50)
-        # Define button rects
-        self.play_rect = pygame.Rect(600, 300, 200, 60)
-        self.credits_rect = pygame.Rect(600, 400, 200, 60)
-    
-    def run(self):
-        running = True
-        selected_option = None
-        while running:
-            self.screen.fill(self.bg_color)
-            title_text = self.font.render("Main Menu", True, (255, 255, 255))
-            self.screen.blit(title_text, (self.screen.get_width()//2 - title_text.get_width()//2, 150))
-            
-            draw_button(self.screen, "Play", self.play_rect, self.font, self.button_color, self.text_color, self.border_color)
-            draw_button(self.screen, "Credits", self.credits_rect, self.font, self.button_color, self.text_color, self.border_color)
-            
-            pygame.display.flip()
-            
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    if self.play_rect.collidepoint(event.pos):
-                        selected_option = "play"
-                        running = False
-                    elif self.credits_rect.collidepoint(event.pos):
-                        selected_option = "credits"
-                        running = False
-        return selected_option
+# ----------------- ITEM CLASSES -----------------
+class Item:
+    def __init__(self, space, position, image_path):
+        """
+        Base class for an item that loads a PNG image and creates an adaptive hitbox
+        based on the image's dimensions.
+        """
+        self.space = space
+        self.position = position
+        self.consumed = False
 
-# Level Selection Menu with 5 level buttons and a Back button
-class LevelSelectMenu:
-    def __init__(self, screen, font, levels):
-        self.screen = screen
-        self.font = font
-        self.levels = levels
-        self.bg_color = (30, 30, 30)
-        self.button_color = (200, 200, 200)
-        self.text_color = (0, 0, 0)
-        self.border_color = (50, 50, 50)
-        # Create button rects for 5 levels and one back button.
-        self.level_buttons = []
-        for i in range(len(levels)):
-            # Position each level button vertically spaced
-            rect = pygame.Rect(600, 250 + i * 70, 200, 60)
-            self.level_buttons.append((rect, i))
-        self.back_rect = pygame.Rect(50, 50, 150, 50)
-    
-    def run(self):
-        running = True
-        selected_level = None
-        while running:
-            self.screen.fill(self.bg_color)
-            title_text = self.font.render("Select Level", True, (255, 255, 255))
-            self.screen.blit(title_text, (self.screen.get_width()//2 - title_text.get_width()//2, 150))
-            
-            for rect, level_index in self.level_buttons:
-                draw_button(self.screen, f"Level {level_index+1}", rect, self.font, self.button_color, self.text_color, self.border_color)
-            draw_button(self.screen, "Back", self.back_rect, self.font, self.button_color, self.text_color, self.border_color)
-            
-            pygame.display.flip()
-            
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    mouse_pos = event.pos
-                    for rect, level_index in self.level_buttons:
-                        if rect.collidepoint(mouse_pos):
-                            selected_level = level_index
-                            running = False
-                    if self.back_rect.collidepoint(mouse_pos):
-                        # Return None to indicate back to main menu
-                        running = False
-            # Limit the loop speed
-            pygame.time.Clock().tick(60)
-        return selected_level
+        # Attempt to load the image; if not found and the placeholder toggle is on,
+        # create a placeholder surface.
+        if USE_PLACEHOLDER_ITEM and not os.path.isfile(image_path):
+            # Create a placeholder image (50x50 gray square with transparency)
+            self.image = pygame.Surface((50, 50), pygame.SRCALPHA)
+            self.image.fill((150, 150, 150, 255))
+        else:
+            self.image = pygame.image.load(image_path).convert_alpha()
 
-# Credits screen: a blank screen with a Back button.
-class CreditsScreen:
-    def __init__(self, screen, font):
-        self.screen = screen
-        self.font = font
-        self.bg_color = (30, 30, 30)
-        self.text_color = (255, 255, 255)
-        self.button_color = (200, 200, 200)
-        self.border_color = (50, 50, 50)
-        self.back_rect = pygame.Rect(50, 50, 150, 50)
-    
-    def run(self):
-        running = True
-        while running:
-            self.screen.fill(self.bg_color)
-            # For now, credits screen is blank; you could add credits text if desired.
-            credits_text = self.font.render("Credits", True, self.text_color)
-            self.screen.blit(credits_text, (self.screen.get_width()//2 - credits_text.get_width()//2, 200))
-            
-            draw_button(self.screen, "Back", self.back_rect, self.font, self.button_color, self.text_color, self.border_color)
-            pygame.display.flip()
-            
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    if self.back_rect.collidepoint(event.pos):
-                        running = False
-            pygame.time.Clock().tick(60)
+        # Get the image rectangle for drawing; center it on the given position.
+        self.rect = self.image.get_rect(center=position)
+        self.width, self.height = self.rect.size
 
-# Game and Level classes from your platformer code
+        # Create a static physics body at the given position.
+        self.body = pymunk.Body(body_type=pymunk.Body.STATIC)
+        self.body.position = position
+
+        # Create a collision shape (hitbox) that matches the image dimensions.
+        self.shape = pymunk.Poly.create_box(self.body, (self.width, self.height))
+        self.shape.sensor = True  # Sensor: detects collisions without physical response.
+        self.shape.collision_type = 3  # Unique collision type for items.
+        self.space.add(self.body, self.shape)
+
+    def draw(self, screen):
+        """
+        Draw the item image onto the screen.
+        """
+        self.rect.center = self.body.position
+        screen.blit(self.image, self.rect)
+
+    def consume(self, player):
+        """
+        Base consumption logic: marks the item as consumed and removes it from the space.
+        Override in subclasses to apply additional effects.
+        """
+        if not self.consumed:
+            self.consumed = True
+            self.space.remove(self.body, self.shape)
+
+class HealthyItem(Item):
+    def __init__(self, space, position, image_path, health_boost=10):
+        """
+        A healthy item increases the player's health when consumed.
+        """
+        super().__init__(space, position, image_path)
+        self.health_boost = health_boost
+
+    def consume(self, player):
+        """
+        When consumed, this item increases the player's health by health_boost,
+        not exceeding the player's maximum health.
+        """
+        if not self.consumed:
+            super().consume(player)
+            player.health = min(player.health + self.health_boost, player.max_health)
+
+class UnhealthyItem(Item):
+    def __init__(self, space, position, image_path, damage=5):
+        """
+        An unhealthy item decreases the player's health when consumed.
+        """
+        super().__init__(space, position, image_path)
+        self.damage = damage
+
+    def consume(self, player):
+        """
+        When consumed, this item decreases the player's health by damage,
+        ensuring the health does not drop below zero.
+        """
+        if not self.consumed:
+            super().consume(player)
+            player.health = max(player.health - self.damage, 0)
+
+# ----------------- GAME CLASSES -----------------
 class Level:
     def __init__(self, space, level_data):
         self.space = space
@@ -138,7 +99,7 @@ class Level:
         self.static_body = self.space.static_body
         self.platforms = []
 
-        # Create platforms based on level data
+        # Create platforms based on level data.
         for start, end in level_data["platforms"]:
             platform = pymunk.Segment(self.static_body, start, end, 5)
             platform.friction = self.FRICTION
@@ -146,19 +107,18 @@ class Level:
             self.space.add(platform)
             self.platforms.append(platform)
 
-        platform_x = {}
-        for i in range(len(self.platforms)):
-            platform_x[i] = self.platforms[i]._get_a()[0]
+        # Determine spawn and end points based on platform positions.
+        platform_x = {i: self.platforms[i]._get_a()[0] for i in range(len(self.platforms))}
 
-        # Find the platform with the smallest x value for the spawn point
+        # Spawn point: platform with the smallest x value.
         min_key = min(platform_x, key=platform_x.get)
         middle_x_point = (self.platforms[min_key]._get_a()[0] + self.platforms[min_key]._get_b()[0]) / 2
-        self.spawn_point = (middle_x_point, self.platforms[min_key]._get_a()[1]-100)
+        self.spawn_point = (middle_x_point, self.platforms[min_key]._get_a()[1] - 100)
 
-        # Find the platform with the greatest x value for the end point
+        # End point: platform with the greatest x value.
         max_key = max(platform_x, key=platform_x.get)
         middle_x_point_end = (self.platforms[max_key]._get_a()[0] + self.platforms[max_key]._get_b()[0]) / 2
-        self.end_point = (middle_x_point_end, self.platforms[max_key]._get_a()[1]-20)
+        self.end_point = (middle_x_point_end, self.platforms[max_key]._get_a()[1] - 20)
 
 class Game:
     def __init__(self):
@@ -170,22 +130,24 @@ class Game:
         self.space = pymunk.Space()
         self.space.gravity = (0, 900)
 
-        # Initialize player
+        # Initialize player and its physical properties.
         self.player = None
         self.player_shape = None
         self.create_player()
 
+        # Health settings.
         self.health = 10.0
+        self.max_health = 100.0  # Added so healthy/unhealthy items work correctly.
         self.font = pygame.font.Font("./assets/fonts/Sigmar-Regular.ttf", 24)
 
-        # Pymunk debug draw options
+        # Draw options.
         self.draw_options = pymunk.pygame_util.DrawOptions(self.screen)
 
-        # Collision tracking
+        # Collision tracking.
         self.contact = {"on_ground": False}
         self.setup_collisions()
 
-        # Level handling with 5 levels
+        # Level handling.
         self.current_level = 0
         self.levels = [
             {
@@ -251,6 +213,7 @@ class Game:
                 ]
             }
         ]
+        # Optionally, items can be created and added here using the Item classes.
 
     def create_player(self):
         mass = 1
@@ -277,11 +240,9 @@ class Game:
         handler.separate = separate_player_ground
 
     def load_level(self, level_index):
-        # Remove all shapes and bodies from the space and re-create the player
-        for shape in self.space.shapes[:]:
-            self.space.remove(shape)
-        for body in self.space.bodies[:]:
-            self.space.remove(body)
+        # Remove all existing shapes and bodies from the space.
+        self.space.remove(*self.space.shapes)
+        self.space.remove(*self.space.bodies)
         self.create_player()
         self.level = Level(self.space, self.levels[level_index])
         self.player.position = self.level.spawn_point
@@ -292,16 +253,12 @@ class Game:
         self.screen.blit(health_text, (10, 10))
 
     def run(self):
-        # Main game loop (pressing ESC quits the game)
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit()
                     sys.exit()
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        pygame.quit()
-                        sys.exit()
                     if event.key == pygame.K_UP and self.contact["on_ground"]:
                         self.player.apply_impulse_at_local_point((0, -500))
                     if event.key == pygame.K_n:  # Move to next level
@@ -319,31 +276,14 @@ class Game:
             self.draw_health()
             pygame.display.flip()
 
-            self.space.step(1/60.0)
+            self.space.step(1 / 60.0)
             self.clock.tick(60)
             self.player.angular_velocity = 0
 
         pygame.quit()
 
 def main():
-    game = Game()
-    while True:
-        # Show the main menu
-        main_menu = MainMenu(game.screen, game.font)
-        option = main_menu.run()
-        
-        if option == "play":
-            # Show level select
-            level_menu = LevelSelectMenu(game.screen, game.font, game.levels)
-            selected_level = level_menu.run()
-            if selected_level is not None:
-                game.current_level = selected_level
-                game.load_level(selected_level)
-                game.run()  # Start the game loop
-        elif option == "credits":
-            # Show credits screen
-            credits = CreditsScreen(game.screen, game.font)
-            credits.run()
+    Game().run()
 
 if __name__ == "__main__":
     main()
